@@ -6,12 +6,12 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
-import adios2
+import adios2_compressors as adios2
 import numpy as np
 
 
 def main() -> int:
-    with tempfile.TemporaryDirectory(prefix="adios-blosc2-wheel-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="adios2-compressors-wheel-") as temporary:
         expected = np.arange(65536, dtype=np.float32).reshape(256, 256) % 31
         compressors = (
             ("blosc-lz4", "blosc", {"compressor": "lz4", "clevel": "5"}, 0.0),

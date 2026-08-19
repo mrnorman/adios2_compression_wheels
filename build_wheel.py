@@ -44,6 +44,13 @@ SZ3_REVISION = "be68d645b2e1350adfbd61851c0886b38b876aa5"
 SZ_REVISION = "5857c6ed1f7a8ca1c2822a88e2f614e466dc4d34"
 ZSTD_REVISION = "f8745da6ff1ad1e7bab384bd1f9d742439278e99"
 ZLIB_REVISION = "51b7f2abdade71cd9bb0e7a373ef2610ec6f9daf"
+UPSTREAM_VERSION = "2.12.1"
+PACKAGE_VERSION = f"{UPSTREAM_VERSION}.1"
+PYTHON_PACKAGE = "adios2_compressors"
+DISTRIBUTION_NAME = "adios2-compressors"
+WHEEL_NAME = DISTRIBUTION_NAME.replace("-", "_")
+LIBRARY_SUFFIX = "_compressors"
+PROJECT_URL = "https://github.com/mrnorman/adios2_compression_wheels"
 
 SOURCES = (
     (
@@ -144,6 +151,137 @@ def adios2_version(adios2_source: Path) -> str:
     raise RuntimeError(f"Cannot translate ADIOS2 git description into a wheel version: {description}")
 
 
+def replace_required(path: Path, old: str, new: str, count: int = -1) -> None:
+    contents = path.read_text(encoding="utf-8")
+    occurrences = contents.count(old)
+    if occurrences == 0:
+        raise RuntimeError(f"Cannot find {old!r} in {path}")
+    if count >= 0 and occurrences != count:
+        raise RuntimeError(
+            f"Expected {count} occurrences of {old!r} in {path}, found {occurrences}"
+        )
+    path.write_text(contents.replace(old, new), encoding="utf-8")
+
+
+def namespace_python_package(stage: Path) -> Path:
+    package = stage / "python" / "adios2"
+    namespaced_package = package.with_name(PYTHON_PACKAGE)
+    package.rename(namespaced_package)
+    for source in namespaced_package.rglob("*.py"):
+        contents = source.read_text(encoding="utf-8")
+        source.write_text(re.sub(r"\badios2\b", PYTHON_PACKAGE, contents), encoding="utf-8")
+    for source in (stage / "bindings" / "Python" / "test").rglob("*.py"):
+        contents = source.read_text(encoding="utf-8")
+        source.write_text(re.sub(r"\badios2\b", PYTHON_PACKAGE, contents), encoding="utf-8")
+
+    replace_required(
+        stage / "python" / "CMakeLists.txt",
+        "adios2",
+        PYTHON_PACKAGE,
+    )
+    replace_required(
+        stage / "bindings" / "Python" / "CMakeLists.txt",
+        "adios2/bindings",
+        f"{PYTHON_PACKAGE}/bindings",
+    )
+    replace_required(
+        stage / "bindings" / "Python" / "CMakeLists.txt",
+        "  NB_STATIC\n",
+        f"  NB_STATIC\n  NB_DOMAIN {PYTHON_PACKAGE}\n",
+        count=1,
+    )
+    replace_required(
+        stage / "bindings" / "Python" / "CMakeLists.txt",
+        "set(install_location adios2)",
+        f"set(install_location {PYTHON_PACKAGE})",
+        count=1,
+    )
+    replace_required(
+        stage / "CMakeLists.txt",
+        'set(CMAKE_INSTALL_LIBDIR "adios2")',
+        f'set(CMAKE_INSTALL_LIBDIR "{PYTHON_PACKAGE}")',
+        count=1,
+    )
+    replace_required(
+        stage / "CMakeLists.txt",
+        'set(CMAKE_INSTALL_INCLUDEDIR "adios2/include")',
+        f'set(CMAKE_INSTALL_INCLUDEDIR "{PYTHON_PACKAGE}/include")',
+        count=1,
+    )
+    replace_required(
+        stage / "CMakeLists.txt",
+        'set(CMAKE_INSTALL_BINDIR "adios2/bindings")',
+        f'set(CMAKE_INSTALL_BINDIR "{PYTHON_PACKAGE}/bindings")',
+        count=1,
+    )
+    return namespaced_package
+
+
+def customize_metadata(stage: Path, python_minimum: str | None) -> None:
+    pyproject = stage / "pyproject.toml"
+    contents = pyproject.read_text(encoding="utf-8")
+    operating_system_classifier = (
+        "Operating System :: MacOS :: MacOS X"
+        if platform.system() == "Darwin"
+        else "Operating System :: POSIX :: Linux"
+    )
+    replacements = {
+        'name = "adios2"': f'name = "{DISTRIBUTION_NAME}"',
+        'description = "The Adaptable Input Output System version 2"': (
+            'description = "ADIOS2 compression build supporting portUrb Python workflows"'
+        ),
+        'readme = "ReadMe.md"': 'readme = "ReadMe.compression-wheel.md"',
+        'keywords = [\n    "Python",\n    "Web",\n    "Application",\n    "Framework",\n]': (
+            'keywords = ["portUrb", "ADIOS2", "compression", "scientific computing"]'
+        ),
+        '"Operating System :: OS Independent",': f'"{operating_system_classifier}",',
+        'wheel.packages = ["python/adios2"]': f'wheel.packages = ["python/{PYTHON_PACKAGE}"]',
+        'test-command = "python -m unittest adios2.test.simple_read_write.TestSimpleReadWrite"': (
+            f'test-command = "python -m unittest '
+            f'{PYTHON_PACKAGE}.test.simple_read_write.TestSimpleReadWrite"'
+        ),
+    }
+    for old, new in replacements.items():
+        if contents.count(old) != 1:
+            raise RuntimeError(f"Expected one occurrence of {old!r} in {pyproject}")
+        contents = contents.replace(old, new)
+    contents, substitutions = re.subn(
+        r"(?ms)^authors = \[.*?^\]\n",
+        'authors = [{ name="ADIOS2 contributors" }]\n'
+        'maintainers = [{ name="Matt Norman" }]\n',
+        contents,
+        count=1,
+    )
+    if substitutions != 1:
+        raise RuntimeError(f"Cannot replace project authors in {pyproject}")
+    contents, substitutions = re.subn(
+        r"(?ms)^\[project\.urls\]\n.*?(?=^\[tool\.cibuildwheel\])",
+        (
+            "[project.urls]\n"
+            f'Homepage = "{PROJECT_URL}"\n'
+            f'Repository = "{PROJECT_URL}"\n'
+            f'"Issue Tracker" = "{PROJECT_URL}/issues"\n'
+            'portUrb = "https://github.com/ORNL/portUrb"\n'
+            '"Upstream ADIOS2" = "https://github.com/ornladios/ADIOS2"\n'
+            '"ADIOS2 Documentation" = "https://adios2.readthedocs.io/"\n\n'
+        ),
+        contents,
+        count=1,
+    )
+    if substitutions != 1:
+        raise RuntimeError(f"Cannot replace project URLs in {pyproject}")
+    if python_minimum is not None:
+        contents, substitutions = re.subn(
+            r'(?m)^requires-python\s*=\s*"[^"]+"$',
+            f'requires-python = ">={python_minimum}"',
+            contents,
+            count=1,
+        )
+        if substitutions != 1:
+            raise RuntimeError(f"Cannot set requires-python in {pyproject}")
+    pyproject.write_text(contents, encoding="utf-8")
+
+
 def prepare_source(
     work_dir: Path,
     sources: dict[str, Path],
@@ -159,8 +297,13 @@ def prepare_source(
         dirs_exist_ok=True,
         ignore=shutil.ignore_patterns(".git", "_skbuild", "build", "__pycache__"),
     )
-    (stage / "VERSION.TXT").write_text(adios2_version(adios2_source), encoding="utf-8")
-    licenses = stage / "python" / "adios2" / "third_party_licenses"
+    upstream_version = adios2_version(adios2_source)
+    if upstream_version != UPSTREAM_VERSION:
+        raise RuntimeError(f"Expected ADIOS2 {UPSTREAM_VERSION}, found {upstream_version}")
+    (stage / "VERSION.TXT").write_text(PACKAGE_VERSION, encoding="utf-8")
+    shutil.copy2(SCRIPT_DIR / "README.md", stage / "ReadMe.compression-wheel.md")
+    package = namespace_python_package(stage)
+    licenses = package / "third_party_licenses"
     licenses.mkdir(parents=True, exist_ok=True)
     license_files = {
         "Blosc2-LICENSE.txt": sources["blosc2_source"] / "LICENSE.txt",
@@ -170,23 +313,13 @@ def prepare_source(
         "ZFP-NOTICE.txt": sources["zfp_source"] / "NOTICE",
         "zlib-LICENSE.txt": sources["zlib_source"] / "LICENSE",
         "zstd-LICENSE.txt": sources["zstd_source"] / "LICENSE",
+        "Wheel-build-BSD-2-Clause.txt": SCRIPT_DIR / "LICENSE",
     }
     for name, source in license_files.items():
         shutil.copy2(source, licenses / name)
     for source in (sources["blosc2_source"] / "LICENSES").glob("*.txt"):
         shutil.copy2(source, licenses / f"Blosc2-{source.name}")
-    if python_minimum is not None:
-        pyproject = stage / "pyproject.toml"
-        contents = pyproject.read_text(encoding="utf-8")
-        contents, substitutions = re.subn(
-            r'(?m)^requires-python\s*=\s*"[^"]+"$',
-            f'requires-python = ">={python_minimum}"',
-            contents,
-            count=1,
-        )
-        if substitutions != 1:
-            raise RuntimeError(f"Cannot set requires-python in {pyproject}")
-        pyproject.write_text(contents, encoding="utf-8")
+    customize_metadata(stage, python_minimum)
     return stage
 
 
@@ -202,6 +335,7 @@ def cmake_settings(prefix: Path, build_dir: Path, stable_abi: bool) -> list[str]
         "cmake.define.ADIOS2_USE_MPI": "OFF",
         "cmake.define.ADIOS2_USE_PIP": "ON",
         "cmake.define.ADIOS2_USE_Python": "ON",
+        "cmake.define.ADIOS2_LIBRARY_SUFFIX": LIBRARY_SUFFIX,
         "cmake.define.CMAKE_DISABLE_FIND_PACKAGE_OpenMP": "ON",
         "cmake.define.HAVE_shmget": "OFF",
         "cmake.define.SZ_ROOT": str(prefix.resolve()),
@@ -290,7 +424,7 @@ def build_wheel(
         env=environment,
     )
     if arguments.install:
-        wheel = max(output_dir.glob("adios2-*.whl"), key=lambda path: path.stat().st_mtime)
+        wheel = max(output_dir.glob(f"{WHEEL_NAME}-*.whl"), key=lambda path: path.stat().st_mtime)
         subprocess.run(
             [sys.executable, "-m", "pip", "install", "--force-reinstall", str(wheel)],
             check=True,

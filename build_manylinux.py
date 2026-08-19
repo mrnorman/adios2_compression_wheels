@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import platform
 import shutil
@@ -13,9 +14,21 @@ from pathlib import Path
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-IMAGE = "adios2-blosc2-manylinux2014:local"
+IMAGE = "adios2-compressors-manylinux2014:local"
+WHEEL_NAME = "adios2_compressors"
 PLATFORM_TAGS = {
     "x86_64": "manylinux_2_17_x86_64",
+    "aarch64": "manylinux_2_17_aarch64",
+}
+MANYLINUX_IMAGES = {
+    "x86_64": (
+        "quay.io/pypa/manylinux2014_x86_64@"
+        "sha256:95440e0e72dd3a81dc8d2cf59a84d57af661456620f5bc821ff92048d0e54ff9"
+    ),
+    "aarch64": (
+        "quay.io/pypa/manylinux2014_aarch64@"
+        "sha256:b63ff749fee6f3f2a6b67ed3101a073db3211df1791da19e9acf96f43c0dd6ff"
+    ),
 }
 
 
@@ -69,12 +82,12 @@ def build_in_container(jobs: int | None) -> None:
         command.extend(("--jobs", str(jobs)))
     run(command)
 
-    candidates = sorted(raw_wheels.glob("adios2-*-cp312-abi3-linux_*.whl"))
+    candidates = sorted(raw_wheels.glob(f"{WHEEL_NAME}-*-cp312-abi3-linux_*.whl"))
     if not candidates:
         raise RuntimeError(f"No cp312-abi3 Linux wheel found in {raw_wheels}")
     raw_wheel = max(candidates, key=lambda path: path.stat().st_mtime)
     run(["auditwheel", "show", str(raw_wheel)])
-    for old_wheel in repaired_wheels.glob("adios2-*.whl"):
+    for old_wheel in repaired_wheels.glob(f"{WHEEL_NAME}-*.whl"):
         old_wheel.unlink()
     run(
         [
@@ -85,7 +98,7 @@ def build_in_container(jobs: int | None) -> None:
 
     repaired = sorted(
         path
-        for path in repaired_wheels.glob("adios2-*-cp312-abi3-*.whl")
+        for path in repaired_wheels.glob(f"{WHEEL_NAME}-*-cp312-abi3-*.whl")
         if platform_tag in path.name
     )
     if not repaired:
@@ -99,10 +112,22 @@ def build_in_container(jobs: int | None) -> None:
     test_python = test_environment / "bin" / "python"
     run([str(test_python), "-m", "pip", "install", "--no-deps", "--force-reinstall", str(destination)])
     run([str(test_python), str(SCRIPT_DIR / "verify_wheel.py")])
+    digest = hashlib.sha256(destination.read_bytes()).hexdigest()
+    checksum = destination.with_suffix(f"{destination.suffix}.sha256")
+    checksum.write_text(f"{digest}  {destination.name}\n", encoding="utf-8")
     print(f"Created and verified {destination}", flush=True)
+    print(f"Wrote {checksum}", flush=True)
 
 
 def run_container(engine: str, jobs: int | None, ignore_chown_errors: bool) -> None:
+    architecture = platform.machine()
+    try:
+        manylinux_image = MANYLINUX_IMAGES[architecture]
+    except KeyError as error:
+        supported = ", ".join(sorted(MANYLINUX_IMAGES))
+        raise RuntimeError(
+            f"Unsupported architecture {architecture!r}; supported: {supported}"
+        ) from error
     run([sys.executable, str(SCRIPT_DIR / "build_wheel.py"), "--prepare-sources-only"])
     engine_options = []
     if ignore_chown_errors:
@@ -113,6 +138,7 @@ def run_container(engine: str, jobs: int | None, ignore_chown_errors: bool) -> N
         [
             engine, *engine_options, "build",
             "--file", str(SCRIPT_DIR / "Dockerfile.manylinux"),
+            "--build-arg", f"MANYLINUX_IMAGE={manylinux_image}",
             "--tag", IMAGE,
             str(SCRIPT_DIR),
         ]
