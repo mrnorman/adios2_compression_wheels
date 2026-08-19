@@ -1,0 +1,13 @@
+FROM quay.io/pypa/manylinux2014_x86_64@sha256:95440e0e72dd3a81dc8d2cf59a84d57af661456620f5bc821ff92048d0e54ff9
+
+ENV PATH="/opt/python/cp312-cp312/bin:${PATH}"
+
+RUN python -m pip install --no-cache-dir \
+        "build==1.2.2.post1" \
+        "cmake==3.31.10" \
+        "ninja==1.13.0" \
+        "numpy==1.26.4" \
+        "scikit-build-core==0.11.6" \
+        "setuptools-scm==8.3.1"
+
+WORKDIR /project
